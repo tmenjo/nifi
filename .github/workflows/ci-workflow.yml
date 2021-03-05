@@ -30,6 +30,9 @@ jobs:
           sudo apt clean
           docker rmi $(docker image ls -aq)
           df -h
+      - name: Install Libpmem
+        run: |
+          sudo apt -y update && sudo apt install libpmem-dev
       - name: Checkout Code
         uses: actions/checkout@v2
       - name: Check NPM Cache
