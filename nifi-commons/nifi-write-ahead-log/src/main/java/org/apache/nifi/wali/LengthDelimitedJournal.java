@@ -17,6 +17,8 @@
 
 package org.apache.nifi.wali;
 
+import org.apache.nifi.pmem.PmemMappedFile;
+import org.apache.nifi.pmem.PmemMappedFile.PmemOutputStream;
 import org.apache.nifi.stream.io.ByteCountingInputStream;
 import org.apache.nifi.stream.io.LimitingInputStream;
 import org.slf4j.Logger;
@@ -41,6 +43,8 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.text.DecimalFormat;
 import java.util.Collection;
 import java.util.HashMap;
@@ -49,9 +53,14 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+import static org.apache.nifi.pmem.PmemMappedFile.PmemExtendStrategy.EXTEND_DOUBLY;
+import static org.apache.nifi.pmem.PmemMappedFile.PmemPutStrategy.PUT_NO_FLUSH;
+
 public class LengthDelimitedJournal<T> implements WriteAheadJournal<T> {
     private static final Logger logger = LoggerFactory.getLogger(LengthDelimitedJournal.class);
     private static final int DEFAULT_MAX_IN_HEAP_SERIALIZATION_BYTES = 5 * 1024 * 1024; // 5 MB
+    private static final long DEFAULT_LIBPMEM_JOURNAL_BYTES = 128L * 1024 * 1024; // 128 MB
+    private static final Set<PosixFilePermission> DEFAULT_MODE = PosixFilePermissions.fromString("rw-r--r--"); // 0644
 
     private static final JournalSummary INACTIVE_JOURNAL_SUMMARY = new StandardJournalSummary(-1L, -1L, 0);
     private static final int JOURNAL_ENCODING_VERSION = 1;
@@ -65,9 +74,10 @@ public class LengthDelimitedJournal<T> implements WriteAheadJournal<T> {
     private final SerDeFactory<T> serdeFactory;
     private final ObjectPool<ByteArrayDataOutputStream> streamPool;
     private final int maxInHeapSerializationBytes;
+    private final boolean libpmemEnabled;
 
     private SerDe<T> serde;
-    private FileOutputStream fileOut;
+    private OutputStream fileOut;
     private BufferedOutputStream bufferedOut;
 
     private long currentTransactionId;
@@ -79,11 +89,21 @@ public class LengthDelimitedJournal<T> implements WriteAheadJournal<T> {
     private final ByteBuffer transactionPreamble = ByteBuffer.allocate(12); // guarded by synchronized block
 
     public LengthDelimitedJournal(final File journalFile, final SerDeFactory<T> serdeFactory, final ObjectPool<ByteArrayDataOutputStream> streamPool, final long initialTransactionId) {
-        this(journalFile, serdeFactory, streamPool, initialTransactionId, DEFAULT_MAX_IN_HEAP_SERIALIZATION_BYTES);
+        this(journalFile, serdeFactory, streamPool, initialTransactionId, DEFAULT_MAX_IN_HEAP_SERIALIZATION_BYTES, false);
     }
 
     public LengthDelimitedJournal(final File journalFile, final SerDeFactory<T> serdeFactory, final ObjectPool<ByteArrayDataOutputStream> streamPool, final long initialTransactionId,
                                   final int maxInHeapSerializationBytes) {
+        this(journalFile, serdeFactory, streamPool, initialTransactionId, maxInHeapSerializationBytes, false);
+    }
+
+    public LengthDelimitedJournal(final File journalFile, final SerDeFactory<T> serdeFactory, final ObjectPool<ByteArrayDataOutputStream> streamPool, final long initialTransactionId,
+                                  final boolean libpmemEnabled) {
+        this(journalFile, serdeFactory, streamPool, initialTransactionId, DEFAULT_MAX_IN_HEAP_SERIALIZATION_BYTES, libpmemEnabled);
+    }
+
+    public LengthDelimitedJournal(final File journalFile, final SerDeFactory<T> serdeFactory, final ObjectPool<ByteArrayDataOutputStream> streamPool, final long initialTransactionId,
+                                  final int maxInHeapSerializationBytes, final boolean libpmemEnabled) {
         this.journalFile = journalFile;
         this.overflowDirectory = new File(journalFile.getParentFile(), "overflow-" + getBaseFilename(journalFile));
         this.serdeFactory = serdeFactory;
@@ -93,6 +113,7 @@ public class LengthDelimitedJournal<T> implements WriteAheadJournal<T> {
         this.initialTransactionId = initialTransactionId;
         this.currentTransactionId = initialTransactionId;
         this.maxInHeapSerializationBytes = maxInHeapSerializationBytes;
+        this.libpmemEnabled = libpmemEnabled;
     }
 
     public void dispose() {
@@ -133,11 +154,22 @@ public class LengthDelimitedJournal<T> implements WriteAheadJournal<T> {
 
     private synchronized OutputStream getOutputStream() throws FileNotFoundException {
         if (fileOut == null) {
-            fileOut = new FileOutputStream(journalFile);
-            bufferedOut = new BufferedOutputStream(fileOut);
+            if (libpmemEnabled) {
+                try {
+                    final PmemMappedFile pmem = PmemMappedFile.create(journalFile.getPath(), DEFAULT_LIBPMEM_JOURNAL_BYTES, DEFAULT_MODE);
+                    fileOut = pmem.uniqueOutputStream(0L, EXTEND_DOUBLY, PUT_NO_FLUSH);
+                    logger.debug("PMEM created: {}", pmem.toString());
+                } catch (IOException e) {
+                    throw (FileNotFoundException)(new FileNotFoundException().initCause(e));
+                }
+                bufferedOut = null; // not used
+            } else {
+                fileOut = new FileOutputStream(journalFile);
+                bufferedOut = new BufferedOutputStream(fileOut);
+            }
         }
 
-        return bufferedOut;
+        return (libpmemEnabled) ? fileOut : bufferedOut;
     }
 
     @Override
@@ -381,7 +413,13 @@ public class LengthDelimitedJournal<T> implements WriteAheadJournal<T> {
 
         try {
             if (fileOut != null) {
-                fileOut.getChannel().force(false);
+                if (fileOut instanceof PmemOutputStream) {
+                    final PmemOutputStream pmemOut = (PmemOutputStream) fileOut;
+                    pmemOut.sync();
+                    logger.debug("PMEM drained: {}", pmemOut.underlyingPmem().toString());
+                } else {
+                    ((FileOutputStream) fileOut).getChannel().force(false);
+                }
             }
         } catch (final IOException ioe) {
             poison(ioe);
@@ -402,6 +440,9 @@ public class LengthDelimitedJournal<T> implements WriteAheadJournal<T> {
                     fileOut.write(JOURNAL_COMPLETE);
                 }
 
+                if (libpmemEnabled) {
+                    logger.debug("PMEM being closed: {}", ((PmemOutputStream) fileOut).underlyingPmem().toString());
+                }
                 fileOut.close();
             }
         } catch (final IOException ioe) {

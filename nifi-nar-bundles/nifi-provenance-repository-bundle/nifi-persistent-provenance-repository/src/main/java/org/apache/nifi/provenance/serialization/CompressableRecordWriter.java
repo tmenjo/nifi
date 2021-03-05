@@ -17,6 +17,7 @@
 
 package org.apache.nifi.provenance.serialization;
 
+import org.apache.nifi.pmem.PmemMappedFile.PmemOutputStream;
 import org.apache.nifi.provenance.AbstractRecordWriter;
 import org.apache.nifi.provenance.ProvenanceEventRecord;
 import org.apache.nifi.provenance.toc.TocWriter;
@@ -37,7 +38,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public abstract class CompressableRecordWriter extends AbstractRecordWriter {
     private static final Logger logger = LoggerFactory.getLogger(CompressableRecordWriter.class);
 
-    private final FileOutputStream fos;
+    private final OutputStream fos;
     private final ByteCountingOutputStream rawOutStream;
     private final boolean compressed;
     private final int uncompressedBlockSize;
@@ -72,6 +73,16 @@ public abstract class CompressableRecordWriter extends AbstractRecordWriter {
         this.idGenerator = idGenerator;
     }
 
+    public CompressableRecordWriter(final OutputStream out, final File file, final AtomicLong idGenerator, final TocWriter writer, final boolean compressed,
+        final int uncompressedBlockSize) throws IOException {
+        super(file, writer);
+        this.fos = out;
+
+        this.compressed = compressed;
+        rawOutStream = new ByteCountingOutputStream(new BufferedOutputStream(fos));
+        this.uncompressedBlockSize = uncompressedBlockSize;
+        this.idGenerator = idGenerator;
+    }
 
     protected AtomicLong getIdGenerator() {
         return idGenerator;
@@ -207,7 +218,13 @@ public abstract class CompressableRecordWriter extends AbstractRecordWriter {
     @Override
     protected synchronized void syncUnderlyingOutputStream() throws IOException {
         if (fos != null) {
-            fos.getFD().sync();
+            if (fos instanceof PmemOutputStream) {
+                final PmemOutputStream pmemOut = (PmemOutputStream) fos;
+                pmemOut.sync();
+                logger.debug("PMEM drained: {}", pmemOut.underlyingPmem().toString());
+            } else if (fos instanceof FileOutputStream) {
+                ((FileOutputStream) fos).getFD().sync();
+            }
         }
     }
 

@@ -33,6 +33,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -84,6 +85,16 @@ public class EventIdFirstSchemaRecordWriter extends CompressableRecordWriter {
         queueIdMap = idLookup.invertQueueIdentifiers();
     }
 
+
+    public EventIdFirstSchemaRecordWriter(final OutputStream out, final File file, final AtomicLong idGenerator, final TocWriter tocWriter, final boolean compressed,
+        final int uncompressedBlockSize, final IdentifierLookup idLookup) throws IOException {
+        super(out, file, idGenerator, tocWriter, compressed, uncompressedBlockSize);
+
+        this.idLookup = idLookup;
+        componentIdMap = idLookup.invertComponentIdentifiers();
+        componentTypeMap = idLookup.invertComponentTypes();
+        queueIdMap = idLookup.invertQueueIdentifiers();
+    }
 
     @Override
     public Map<ProvenanceEventRecord, StorageSummary> writeRecords(final Iterable<ProvenanceEventRecord> events) throws IOException {

@@ -66,6 +66,7 @@ public class SequentialAccessWriteAheadLog<T> implements WriteAheadRepository<T>
     protected final SerDeFactory<T> serdeFactory;
     private final SyncListener syncListener;
     private final Set<String> recoveredSwapLocations = new HashSet<>();
+    private final boolean libpmemEnabled;
 
     private final ReadWriteLock journalRWLock = new ReentrantReadWriteLock();
     private final Lock journalReadLock = journalRWLock.readLock();
@@ -88,6 +89,10 @@ public class SequentialAccessWriteAheadLog<T> implements WriteAheadRepository<T>
     }
 
     public SequentialAccessWriteAheadLog(final File storageDirectory, final SerDeFactory<T> serdeFactory, final SyncListener syncListener) throws IOException {
+        this(storageDirectory, serdeFactory, syncListener, false);
+    }
+
+    public SequentialAccessWriteAheadLog(final File storageDirectory, final SerDeFactory<T> serdeFactory, final SyncListener syncListener, final boolean libpmemEnabled) throws IOException {
         if (!storageDirectory.exists() && !storageDirectory.mkdirs()) {
             throw new IOException("Directory " + storageDirectory + " does not exist and cannot be created");
         }
@@ -109,6 +114,7 @@ public class SequentialAccessWriteAheadLog<T> implements WriteAheadRepository<T>
 
         this.serdeFactory = serdeFactory;
         this.syncListener = (syncListener == null) ? SyncListener.NOP_SYNC_LISTENER : syncListener;
+        this.libpmemEnabled = libpmemEnabled;
     }
 
     @Override
@@ -305,7 +311,7 @@ public class SequentialAccessWriteAheadLog<T> implements WriteAheadRepository<T>
                 journalFile = new File(journalsDirectory, nextTransactionId + ".journal");
             }
 
-            journal = new LengthDelimitedJournal<>(journalFile, serdeFactory, streamPool, nextTransactionId);
+            journal = new LengthDelimitedJournal<>(journalFile, serdeFactory, streamPool, nextTransactionId, libpmemEnabled);
             journal.writeHeader();
 
             logger.debug("Created new Journal starting with Transaction ID {}", nextTransactionId);

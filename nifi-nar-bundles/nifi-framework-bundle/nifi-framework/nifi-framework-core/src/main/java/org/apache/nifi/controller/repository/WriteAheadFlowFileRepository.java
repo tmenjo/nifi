@@ -102,6 +102,7 @@ public class WriteAheadFlowFileRepository implements FlowFileRepository, SyncLis
 
     private final AtomicLong flowFileSequenceGenerator = new AtomicLong(0L);
     private final boolean alwaysSync;
+    private final boolean libpmemEnabled;
     private final boolean retainOrphanedFlowFiles;
 
     private static final Logger logger = LoggerFactory.getLogger(WriteAheadFlowFileRepository.class);
@@ -152,6 +153,7 @@ public class WriteAheadFlowFileRepository implements FlowFileRepository, SyncLis
      */
     public WriteAheadFlowFileRepository() {
         alwaysSync = false;
+        libpmemEnabled = false;
         checkpointDelayMillis = 0L;
         checkpointExecutor = null;
         walImplementation = null;
@@ -163,6 +165,9 @@ public class WriteAheadFlowFileRepository implements FlowFileRepository, SyncLis
     public WriteAheadFlowFileRepository(final NiFiProperties nifiProperties) {
         alwaysSync = Boolean.parseBoolean(nifiProperties.getProperty(NiFiProperties.FLOWFILE_REPOSITORY_ALWAYS_SYNC, "false"));
         this.nifiProperties = nifiProperties;
+
+        libpmemEnabled = Boolean.parseBoolean(nifiProperties.getProperty("nifi.flowfile.repository.libpmem.enabled"));
+        logger.info("PMEM Initializing WriteAheadFlowFileRepository with 'Libpmem Enabled' set to {}", libpmemEnabled);
 
         final String orphanedFlowFileProperty = nifiProperties.getProperty(RETAIN_ORPHANED_FLOWFILES);
         retainOrphanedFlowFiles = orphanedFlowFileProperty == null || Boolean.parseBoolean(orphanedFlowFileProperty);
@@ -244,7 +249,7 @@ public class WriteAheadFlowFileRepository implements FlowFileRepository, SyncLis
         // The specified implementation can be plaintext or encrypted; the only difference is the serde factory
         if (isSequentialAccessWAL(walImplementation)) {
             // TODO: May need to instantiate ESAWAL for clarity?
-            wal = new SequentialAccessWriteAheadLog<>(flowFileRepositoryPaths.get(0), serdeFactory, this);
+            wal = new SequentialAccessWriteAheadLog<>(flowFileRepositoryPaths.get(0), serdeFactory, this, libpmemEnabled);
         } else if (walImplementation.equals(MINIMAL_LOCKING_WALI)) {
             final SortedSet<Path> paths = flowFileRepositoryPaths.stream()
                     .map(File::toPath)

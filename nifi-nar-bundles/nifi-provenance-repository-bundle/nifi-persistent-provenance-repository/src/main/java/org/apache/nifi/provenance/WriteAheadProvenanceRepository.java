@@ -17,6 +17,7 @@
 
 package org.apache.nifi.provenance;
 
+import org.apache.nifi.pmem.PmemMappedFile;
 import org.apache.nifi.authorization.Authorizer;
 import org.apache.nifi.authorization.RequestAction;
 import org.apache.nifi.authorization.resource.Authorizable;
@@ -52,12 +53,19 @@ import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.file.Files;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import static org.apache.nifi.pmem.PmemMappedFile.PmemExtendStrategy.EXTEND_DOUBLY;
+import static org.apache.nifi.pmem.PmemMappedFile.PmemExtendStrategy.EXTEND_TO_FIT;
+import static org.apache.nifi.pmem.PmemMappedFile.PmemPutStrategy.PUT_NO_FLUSH;
 
 
 /**
@@ -91,6 +99,7 @@ public class WriteAheadProvenanceRepository implements ProvenanceRepository {
     private static final Logger logger = LoggerFactory.getLogger(WriteAheadProvenanceRepository.class);
     static final int BLOCK_SIZE = 1024 * 32;
     public static final String EVENT_CATEGORY = "Provenance Repository";
+    private static final Set<PosixFilePermission> DEFAULT_MODE = PosixFilePermissions.fromString("rw-r--r--"); // 0644
 
     private final RepositoryConfiguration config;
 
@@ -121,9 +130,36 @@ public class WriteAheadProvenanceRepository implements ProvenanceRepository {
     @Override
     public synchronized void initialize(final EventReporter eventReporter, final Authorizer authorizer, final ProvenanceAuthorizableFactory resourceFactory,
         final IdentifierLookup idLookup) throws IOException {
+        final boolean libpmemEnabled = config.isLibpmemEnabled();
+        logger.info("PMEM Initializing WriteAheadProvenanceRepository with 'Libpmem Enabled' set to {}", libpmemEnabled);
+
         final RecordWriterFactory recordWriterFactory = (file, idGenerator, compressed, createToc) -> {
-            final TocWriter tocWriter = createToc ? new StandardTocWriter(TocUtil.getTocFile(file), false, false) : null;
-            return new EventIdFirstSchemaRecordWriter(file, idGenerator, tocWriter, compressed, BLOCK_SIZE, idLookup);
+            if (libpmemEnabled) {
+                final File tocFile = TocUtil.getTocFile(file);
+
+                /* Here we do what StandardTocWriter(File, ...) does */
+                final File tocDir = tocFile.getParentFile();
+                if (!tocDir.exists()) {
+                    Files.createDirectories(tocDir.toPath());
+                }
+
+                final PmemMappedFile prov = PmemMappedFile.create(file.toString(), config.getMaxEventFileCapacity(), DEFAULT_MODE);
+                final OutputStream provOut = prov.uniqueOutputStream(0L, EXTEND_TO_FIT, PUT_NO_FLUSH);
+                logger.debug("PMEM created: {}", prov.toString());
+
+                TocWriter tocWriter = null;
+                if (createToc) {
+                    final PmemMappedFile toc = PmemMappedFile.create(tocFile.toString(), config.getMaxEventFileCapacity(), DEFAULT_MODE);
+                    final OutputStream tocOut = toc.uniqueOutputStream(0L, EXTEND_DOUBLY, PUT_NO_FLUSH);
+                    logger.debug("PMEM created: {}", toc.toString());
+
+                    tocWriter = new StandardTocWriter(tocOut, tocFile, false, false);
+                }
+                return new EventIdFirstSchemaRecordWriter(provOut, file, idGenerator, tocWriter, compressed, BLOCK_SIZE, idLookup);
+            } else {
+                final TocWriter tocWriter = createToc ? new StandardTocWriter(TocUtil.getTocFile(file), false, false) : null;
+                return new EventIdFirstSchemaRecordWriter(file, idGenerator, tocWriter, compressed, BLOCK_SIZE, idLookup);
+            }
         };
 
         final EventFileManager fileManager = new EventFileManager();

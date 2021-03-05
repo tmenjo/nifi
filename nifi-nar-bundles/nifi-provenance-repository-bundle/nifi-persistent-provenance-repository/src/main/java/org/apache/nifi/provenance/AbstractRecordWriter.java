@@ -23,6 +23,7 @@ import java.io.OutputStream;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
+import org.apache.nifi.pmem.PmemMappedFile.PmemOutputStream;
 import org.apache.nifi.provenance.serialization.RecordWriter;
 import org.apache.nifi.provenance.toc.TocWriter;
 import org.slf4j.Logger;
@@ -85,8 +86,11 @@ public abstract class AbstractRecordWriter implements RecordWriter {
             } finally {
                 final OutputStream underlying = getUnderlyingOutputStream();
                 if (underlying != null) {
+                    if (underlying instanceof PmemOutputStream) {
+                        logger.debug("PMEM being closed: {}", ((PmemOutputStream) underlying).underlyingPmem().toString());
+                    }
                     try {
-                        getUnderlyingOutputStream().close();
+                        underlying.close();
                     } finally {
                         if (tocWriter != null) {
                             tocWriter.close();
