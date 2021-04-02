@@ -34,51 +34,31 @@
     <build>
         <plugins>
             <plugin>
-                <groupId>org.codehaus.mojo</groupId>
-                <artifactId>native-maven-plugin</artifactId>
-                <version>1.0-alpha-11</version>
-                <extensions>true</extensions>
-                <configuration>
-                    <sources>
-                        <source>
-                            <directory>src/main/c</directory>
-                            <includes>
-                                <include>**/*.c</include>
-                            </includes>
-                        </source>
-                    </sources>
-                    <compilerStartOptions>
-                        <compilerStartOption>-Wall</compilerStartOption>
-                        <compilerStartOption>-Wextra</compilerStartOption>
-                        <compilerStartOption>-Wno-unused-parameter</compilerStartOption>
-                        <compilerStartOption>-Werror</compilerStartOption>
-                        <compilerStartOption>-g</compilerStartOption>
-                        <compilerStartOption>-O2</compilerStartOption>
-                        <compilerStartOption>-fPIC</compilerStartOption>
-                        <compilerStartOption>-D_POSIX_C_SOURCE=200809L</compilerStartOption>
-                        <compilerStartOption>-D_FILE_OFFSET_BITS=64</compilerStartOption>
-                        <compilerStartOption>-I${java.home}/include</compilerStartOption>
-                        <compilerStartOption>-I${java.home}/include/linux</compilerStartOption>
-                        <compilerStartOption>-I${java.home}/../include</compilerStartOption>
-                        <compilerStartOption>-I${java.home}/../include/linux</compilerStartOption>
-                    </compilerStartOptions>
-                    <linkerFinalName>libPmemMappedFile</linkerFinalName>
-                    <linkerFinalNameExt>so</linkerFinalNameExt>
-                    <linkerOutputDirectory>${project.build.directory}/classes</linkerOutputDirectory>
-                    <linkerStartOptions>
-                        <linkerStartOption>-shared</linkerStartOption>
-                    </linkerStartOptions>
-                    <linkerEndOptions>
-                        <linkerEndOption>-lpmem</linkerEndOption>
-                    </linkerEndOptions>
-                </configuration>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
                 <executions>
                     <execution>
+                        <id>cmake</id>
                         <phase>compile</phase>
-                        <goals>
-                            <goal>compile</goal>
-                            <goal>link</goal>
-                        </goals>
+                        <goals><goal>run</goal></goals>
+                        <configuration>
+                            <target>
+                                <property name="cmake.build.type" value="RelWithDebInfo"/>
+                                <mkdir dir="${project.build.directory}/cmake"/>
+                                <exec executable="cmake" dir="${project.build.directory}/cmake" failonerror="true">
+                                    <arg value="-DCMAKE_BUILD_TYPE=${cmake.build.type}"/>
+                                    <arg value="-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=${project.build.directory}/classes"/>
+                                    <arg value="${basedir}/src/main/c"/>
+                                </exec>
+                                <exec executable="cmake" dir="${project.build.directory}/cmake" failonerror="true">
+                                    <env key="VERBOSE" value="1"/>
+                                    <arg value="--build"/>
+                                    <arg value="${project.build.directory}/cmake"/>
+                                    <arg value="--config"/>
+                                    <arg value="${cmake.build.type}"/>
+                                </exec>
+                            </target>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>
@@ -87,16 +67,6 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
                     <argLine>-Djava.library.path=${project.build.directory}/classes</argLine>
-                </configuration>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-jar-plugin</artifactId>
-                <configuration>
-                    <excludes>
-                        <exclude>javac.sh</exclude>
-                        <exclude>org.codehaus.plexus.compiler.javac.*</exclude>
-                    </excludes>
                 </configuration>
             </plugin>
         </plugins>
