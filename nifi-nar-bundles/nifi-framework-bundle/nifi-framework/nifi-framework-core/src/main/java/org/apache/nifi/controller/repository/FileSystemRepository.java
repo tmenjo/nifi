@@ -16,8 +16,6 @@
  */
 package org.apache.nifi.controller.repository;
 
-import org.apache.nifi.pmem.PmemMappedFile;
-import org.apache.nifi.pmem.PmemMappedFile.PmemOutputStream;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.nifi.controller.repository.claim.ContentClaim;
 import org.apache.nifi.controller.repository.claim.ResourceClaim;
@@ -53,8 +51,6 @@ import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.nio.file.attribute.PosixFilePermission;
-import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -82,10 +78,6 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Pattern;
 
-import static org.apache.nifi.pmem.PmemMappedFile.PmemExtendStrategy.EXTEND_TO_FIT;
-import static org.apache.nifi.pmem.PmemMappedFile.PmemPutStrategy.PUT_NO_DRAIN;
-import static org.apache.nifi.pmem.PmemMappedFile.PmemPutStrategy.PUT_NO_FLUSH;
-
 /**
  * Is thread safe
  *
@@ -100,7 +92,6 @@ public class FileSystemRepository implements ContentRepository {
     // unnecessarily large resource claim files
     public static final String APPENDABLE_CLAIM_LENGTH_CAP = "100 MB";
     public static final Pattern MAX_ARCHIVE_SIZE_PATTERN = Pattern.compile("\\d{1,2}%");
-    private static final Set<PosixFilePermission> DEFAULT_MODE = PosixFilePermissions.fromString("rw-r--r--"); // 0644
     private static final Logger LOG = LoggerFactory.getLogger(FileSystemRepository.class);
 
     private final Logger archiveExpirationLog = LoggerFactory.getLogger(FileSystemRepository.class.getName() + ".archive.expiration");
@@ -132,8 +123,6 @@ public class FileSystemRepository implements ContentRepository {
     private final long maxArchiveMillis;
     private final Map<String, Long> minUsableContainerBytesForArchive = new HashMap<>();
     private final boolean alwaysSync;
-    private final boolean libpmemEnabled;
-    private final boolean nonTemporal;
     private final ScheduledExecutorService containerCleanupExecutor;
 
     private ResourceClaimManager resourceClaimManager; // effectively final
@@ -156,8 +145,6 @@ public class FileSystemRepository implements ContentRepository {
         archiveData = false;
         maxArchiveMillis = 0;
         alwaysSync = false;
-        libpmemEnabled = false;
-        nonTemporal = false;
         containerCleanupExecutor = null;
         nifiProperties = null;
         maxAppendableClaimLength = 0;
@@ -263,10 +250,6 @@ public class FileSystemRepository implements ContentRepository {
 
         this.alwaysSync = Boolean.parseBoolean(nifiProperties.getProperty("nifi.content.repository.always.sync"));
         LOG.info("Initializing FileSystemRepository with 'Always Sync' set to {}", alwaysSync);
-        this.libpmemEnabled = Boolean.parseBoolean(nifiProperties.getProperty("nifi.content.repository.libpmem.enabled"));
-        LOG.info("PMEM Initializing FileSystemRepository with 'Libpmem Enabled' set to {}", libpmemEnabled);
-        this.nonTemporal = Boolean.parseBoolean(nifiProperties.getProperty("nifi.content.repository.libpmem.non.temporal"));
-        LOG.info("PMEM Initializing FileSystemRepository with 'Libpmem Non Temporal' set to {}", nonTemporal);
         initializeRepository();
 
         containerCleanupExecutor = new FlowEngine(containers.size(), "Cleanup FileSystemRepository Container", true);
@@ -665,7 +648,7 @@ public class FileSystemRepository implements ContentRepository {
             // and when we call create(), it will remove it from the Queue, which means that no other
             // thread will get the same Claim until we've finished writing to it.
             final File file = getPath(resourceClaim).toFile();
-            final OutputStream underlyingStream = underlyingResourceClaimOutputStream(file);
+            final OutputStream underlyingStream = underlyingResourceClaimOutputStream(file, maxAppendableClaimLength);
             ByteCountingOutputStream claimStream = new SynchronizedByteCountingOutputStream(underlyingStream, file.length());
             writableClaimStreams.put(resourceClaim, claimStream);
 
@@ -682,15 +665,8 @@ public class FileSystemRepository implements ContentRepository {
         return scc;
     }
 
-    private OutputStream underlyingResourceClaimOutputStream(File file) throws IOException {
-        if (libpmemEnabled) {
-            assert (!file.exists());
-            final PmemMappedFile pmem = PmemMappedFile.create(file.toString(), maxAppendableClaimLength, DEFAULT_MODE);
-            LOG.debug("PMEM created: {}", pmem.toString());
-            return pmem.uniqueOutputStream(0L, EXTEND_TO_FIT, (nonTemporal) ? PUT_NO_DRAIN : PUT_NO_FLUSH);
-        } else {
-            return new FileOutputStream(file, true);
-        }
+    protected OutputStream underlyingResourceClaimOutputStream(File file, long softLimit) throws IOException {
+        return new FileOutputStream(file, true);
     }
 
     @Override
@@ -1012,7 +988,7 @@ public class FileSystemRepository implements ContentRepository {
         final ByteCountingOutputStream bcos = claimStream;
 
         // TODO: Refactor OS implementation out (deduplicate methods, etc.)
-        final OutputStream out = new ContentRepositoryOutputStream(scc, bcos, initialLength);
+        final OutputStream out = newContentRepositoryOutputStream(scc, bcos, initialLength);
 
         LOG.debug("Writing to {}", out);
         if (LOG.isTraceEnabled()) {
@@ -1020,6 +996,10 @@ public class FileSystemRepository implements ContentRepository {
         }
 
         return out;
+    }
+
+    protected OutputStream newContentRepositoryOutputStream(StandardContentClaim scc, ByteCountingOutputStream bcos, int initialLength) {
+        return new ContentRepositoryOutputStream(scc, bcos, initialLength);
     }
 
     public static StandardContentClaim validateContentClaimForWriting(ContentClaim claim) {
@@ -2004,18 +1984,16 @@ public class FileSystemRepository implements ContentRepository {
             bcos.flush();
         }
 
+        protected synchronized void sync() throws IOException {
+            ((FileOutputStream) bcos.getWrappedStream()).getFD().sync();
+        }
+
         @Override
         public synchronized void close() throws IOException {
             closed = true;
 
             if (alwaysSync) {
-                if (libpmemEnabled) {
-                    final PmemOutputStream pmemOut = (PmemOutputStream) bcos.getWrappedStream();
-                    pmemOut.sync();
-                    LOG.debug("PMEM drained: {}", pmemOut.underlyingPmem().toString());
-                } else {
-                    ((FileOutputStream) bcos.getWrappedStream()).getFD().sync();
-                }
+                sync();
             }
 
             if (scc.getLength() < 0) {
@@ -2062,10 +2040,6 @@ public class FileSystemRepository implements ContentRepository {
 
                 // ensure that the claim is no longer on the queue
                 writableClaimQueue.remove(new ClaimLengthPair(scc.getResourceClaim(), resourceClaimLength));
-
-                if (libpmemEnabled) {
-                    LOG.debug("PMEM being closed: {}", ((PmemOutputStream) bcos.getWrappedStream()).underlyingPmem().toString());
-                }
 
                 bcos.close();
                 LOG.debug("Claim lenth >= max; Closing {}", this);
