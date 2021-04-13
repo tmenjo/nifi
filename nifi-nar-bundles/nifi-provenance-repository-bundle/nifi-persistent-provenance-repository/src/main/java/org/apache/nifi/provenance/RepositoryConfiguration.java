@@ -64,7 +64,6 @@ public class RepositoryConfiguration {
     private List<SearchableField> searchableAttributes = new ArrayList<>();
     private boolean compress = true;
     private boolean alwaysSync = false;
-    private boolean libpmemEnabled = false;
     private int queryThreadPoolSize = 2;
     private int indexThreadPoolSize = 1;
     private boolean allowRollover = true;
@@ -346,14 +345,6 @@ public class RepositoryConfiguration {
         this.alwaysSync = alwaysSync;
     }
 
-    public boolean isLibpmemEnabled() {
-        return libpmemEnabled;
-    }
-
-    public void setLibpmemEnabled(boolean libpmemEnabled) {
-        this.libpmemEnabled = libpmemEnabled;
-    }
-
     /**
      * @return the maximum number of characters to include in any attribute. If an attribute in a Provenance
      *         Event has more than this number of characters, it will be truncated when the event is retrieved.
@@ -463,7 +454,6 @@ public class RepositoryConfiguration {
         final String indexedAttrString = nifiProperties.getProperty(NiFiProperties.PROVENANCE_INDEXED_ATTRIBUTES);
 
         final Boolean alwaysSync = Boolean.parseBoolean(nifiProperties.getProperty("nifi.provenance.repository.always.sync", "false"));
-        final Boolean libpmemEnabled = Boolean.parseBoolean(nifiProperties.getProperty("nifi.provenance.repository.libpmem.enabled", "false"));
 
         final int defaultMaxAttrChars = 65536;
         final String maxAttrLength = nifiProperties.getProperty("nifi.provenance.repository.max.attribute.length", String.valueOf(defaultMaxAttrChars));
@@ -518,7 +508,6 @@ public class RepositoryConfiguration {
         }
 
         config.setAlwaysSync(alwaysSync);
-        config.setLibpmemEnabled(libpmemEnabled);
 
         config.setDebugFrequency(nifiProperties.getIntegerProperty(NiFiProperties.PROVENANCE_REPO_DEBUG_FREQUENCY, config.getDebugFrequency()));
 

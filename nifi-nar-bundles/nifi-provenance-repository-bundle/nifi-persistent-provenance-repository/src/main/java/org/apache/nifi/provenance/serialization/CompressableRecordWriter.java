@@ -17,20 +17,21 @@
 
 package org.apache.nifi.provenance.serialization;
 
-import org.apache.nifi.pmem.PmemMappedFile.PmemOutputStream;
 import org.apache.nifi.provenance.AbstractRecordWriter;
 import org.apache.nifi.provenance.ProvenanceEventRecord;
 import org.apache.nifi.provenance.toc.TocWriter;
 import org.apache.nifi.stream.io.ByteCountingOutputStream;
 import org.apache.nifi.stream.io.GZIPOutputStream;
 import org.apache.nifi.stream.io.NonCloseableOutputStream;
+import org.apache.nifi.stream.io.SyncFileOutputStream;
+import org.apache.nifi.stream.io.SyncOutputStream;
+import org.apache.nifi.stream.io.SyncOutputStreamBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.BufferedOutputStream;
 import java.io.DataOutputStream;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.concurrent.atomic.AtomicLong;
@@ -38,7 +39,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public abstract class CompressableRecordWriter extends AbstractRecordWriter {
     private static final Logger logger = LoggerFactory.getLogger(CompressableRecordWriter.class);
 
-    private final OutputStream fos;
+    private final SyncOutputStream fos;
     private final ByteCountingOutputStream rawOutStream;
     private final boolean compressed;
     private final int uncompressedBlockSize;
@@ -51,12 +52,17 @@ public abstract class CompressableRecordWriter extends AbstractRecordWriter {
 
 
     public CompressableRecordWriter(final File file, final AtomicLong idGenerator, final TocWriter writer, final boolean compressed,
-        final int uncompressedBlockSize) throws IOException {
+                                    final int uncompressedBlockSize) throws IOException {
+        this(SyncFileOutputStream::new, file, idGenerator, writer, compressed, uncompressedBlockSize);
+    }
+
+    public CompressableRecordWriter(final SyncOutputStreamBuilder builder, final File file, final AtomicLong idGenerator, final TocWriter writer, final boolean compressed,
+                                    final int uncompressedBlockSize) throws IOException {
         super(file, writer);
         logger.trace("Creating Record Writer for {}", file.getName());
 
         this.compressed = compressed;
-        this.fos = new FileOutputStream(file);
+        this.fos = builder.build(file);
         rawOutStream = new ByteCountingOutputStream(new BufferedOutputStream(fos));
         this.uncompressedBlockSize = uncompressedBlockSize;
         this.idGenerator = idGenerator;
@@ -73,16 +79,6 @@ public abstract class CompressableRecordWriter extends AbstractRecordWriter {
         this.idGenerator = idGenerator;
     }
 
-    public CompressableRecordWriter(final OutputStream out, final File file, final AtomicLong idGenerator, final TocWriter writer, final boolean compressed,
-        final int uncompressedBlockSize) throws IOException {
-        super(file, writer);
-        this.fos = out;
-
-        this.compressed = compressed;
-        rawOutStream = new ByteCountingOutputStream(new BufferedOutputStream(fos));
-        this.uncompressedBlockSize = uncompressedBlockSize;
-        this.idGenerator = idGenerator;
-    }
 
     protected AtomicLong getIdGenerator() {
         return idGenerator;
@@ -212,19 +208,13 @@ public abstract class CompressableRecordWriter extends AbstractRecordWriter {
 
     @Override
     protected synchronized OutputStream getUnderlyingOutputStream() {
-        return fos;
+        return (fos == null) ? null : fos.getWrappedStream();
     }
 
     @Override
     protected synchronized void syncUnderlyingOutputStream() throws IOException {
         if (fos != null) {
-            if (fos instanceof PmemOutputStream) {
-                final PmemOutputStream pmemOut = (PmemOutputStream) fos;
-                pmemOut.sync();
-                logger.debug("PMEM drained: {}", pmemOut.underlyingPmem().toString());
-            } else if (fos instanceof FileOutputStream) {
-                ((FileOutputStream) fos).getFD().sync();
-            }
+            fos.sync();
         }
     }
 

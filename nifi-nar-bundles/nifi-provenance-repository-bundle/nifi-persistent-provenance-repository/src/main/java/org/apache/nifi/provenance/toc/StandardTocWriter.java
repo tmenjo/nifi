@@ -19,12 +19,12 @@ package org.apache.nifi.provenance.toc;
 import java.io.BufferedOutputStream;
 import java.io.DataOutputStream;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.nio.file.Files;
 
-import org.apache.nifi.pmem.PmemMappedFile.PmemOutputStream;
+import org.apache.nifi.stream.io.SyncFileOutputStream;
+import org.apache.nifi.stream.io.SyncOutputStream;
+import org.apache.nifi.stream.io.SyncOutputStreamBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -45,7 +45,7 @@ public class StandardTocWriter implements TocWriter {
     public static final byte VERSION = 2;
 
     private final File file;
-    private final OutputStream fos;
+    private final SyncOutputStream fos;
     private final boolean alwaysSync;
     private int index = -1;
 
@@ -56,27 +56,19 @@ public class StandardTocWriter implements TocWriter {
      * @throws IOException if unable to write header info to the specified file
      */
     public StandardTocWriter(final File file, final boolean compressionFlag, final boolean alwaysSync) throws IOException {
+        this(SyncFileOutputStream::new, file, compressionFlag, alwaysSync);
+    }
+
+    public StandardTocWriter(final SyncOutputStreamBuilder builder, final File file, final boolean compressionFlag, final boolean alwaysSync) throws IOException {
         final File tocDir = file.getParentFile();
         if ( !tocDir.exists() ) {
             Files.createDirectories(tocDir.toPath());
         }
 
         this.file = file;
-        fos = new FileOutputStream(file);
+        fos = builder.build(file);
         this.alwaysSync = alwaysSync;
 
-        initialize(compressionFlag);
-    }
-
-    public StandardTocWriter(final OutputStream out, final File file, final boolean compressionFlag, final boolean alwaysSync) throws IOException {
-        this.file = file;
-        fos = out;
-        this.alwaysSync = alwaysSync;
-
-        initialize(compressionFlag);
-    }
-
-    public void initialize(boolean compressionFlag) throws IOException {
         final byte[] header = new byte[2];
         header[0] = VERSION;
         header[1] = (byte) (compressionFlag ? 1 : 0);
@@ -105,13 +97,7 @@ public class StandardTocWriter implements TocWriter {
 
     @Override
     public void sync() throws IOException {
-        if (fos instanceof PmemOutputStream) {
-            final PmemOutputStream pmemOut = (PmemOutputStream) fos;
-            pmemOut.sync();
-            logger.debug("PMEM drained: {}", pmemOut.underlyingPmem().toString());
-        } else if (fos instanceof FileOutputStream) {
-            ((FileOutputStream) fos).getFD().sync();
-        }
+        fos.sync();
     }
 
     @Override
@@ -123,10 +109,6 @@ public class StandardTocWriter implements TocWriter {
     public void close() throws IOException {
         if (alwaysSync) {
             sync();
-        }
-
-        if (fos instanceof PmemOutputStream) {
-            logger.debug("PMEM being closed: {}", ((PmemOutputStream) fos).underlyingPmem().toString());
         }
 
         fos.close();
